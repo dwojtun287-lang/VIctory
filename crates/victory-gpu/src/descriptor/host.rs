@@ -1983,10 +1983,7 @@ fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
             }
             const BUFFER: u32 = 1;
             if resource[0] != BUFFER {
-                // shortcut: unordered access to a texture the title placed
-                // itself is not mirrored; give it a resource as shader
-                // views of such textures get when a dispatch writes one.
-                once!(dimension = resource[0], "placed unordered texture view not mirrored");
+                once!(dimension = resource[0], "placed texture resource could not be created");
                 return None;
             }
             // The resource description's width, after the alignment.
@@ -2026,11 +2023,11 @@ fn same_placed_texture(a: &View, b: &View) -> bool {
     }
 }
 
-/// A shader view of a texture the title placed in memory itself, as a view
+/// A shader or unordered view of a texture the title placed in memory, as a view
 /// of the resource made for that memory (on first use).
 pub(crate) fn placed_texture(view: &View) -> Option<View> {
     const BUFFER: u32 = 1;
-    let View::Placed(false, resource, desc) = view else {
+    let View::Placed(unordered, resource, desc) = view else {
         return None;
     };
     if resource[0] == BUFFER {
@@ -2038,7 +2035,12 @@ pub(crate) fn placed_texture(view: &View) -> Option<View> {
     }
     let address = u64::from(desc[10]) | u64::from(desc[11]) << 32;
     let texture = crate::resource::texture_at(address, resource)?;
-    Some(View::Shader(texture as usize, desc[..10].try_into().ok()))
+    let desc = desc[..10].try_into().ok();
+    Some(if *unordered {
+        View::Unordered(texture as usize, 0, desc)
+    } else {
+        View::Shader(texture as usize, desc)
+    })
 }
 
 /// A null view of the kind `view` is, for a slot whose view the host
@@ -2212,6 +2214,31 @@ fn null_view(at: D3D12_CPU_DESCRIPTOR_HANDLE) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placed_uav_and_srv_share_the_same_texture() {
+        let Some(_host) = host() else { return };
+        let resource = [3, 0, 0, 0, 8, 0, 8, 0x1_0001, 28, 1, 0, 0, 4, 0];
+        let mut words = [0u32; 16];
+        (words[0], words[1], words[10], words[11]) = (28, 4, 0x1000_0000, 0x7fed);
+        let uav = placed_texture(&View::Placed(true, resource, words)).unwrap();
+        let View::Unordered(written, counter, desc) = &uav else { panic!("expected a texture UAV") };
+        assert_eq!(*counter, 0);
+        assert_eq!(*desc, Some(words[..10].try_into().unwrap()));
+        let mut srv_words = words;
+        srv_words[2] = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv_words[5] = 1;
+        let View::Shader(read, _) = placed_texture(&View::Placed(false, resource, srv_words)).unwrap() else { panic!("expected an SRV") };
+        assert_eq!(*written, read);
+        let heap = HostHeap::new(false, 4).unwrap();
+        assert!(make(&uav, heap.cpu(0)).is_some());
+        let texture = crate::resource::host_resource(read as crate::object::This).unwrap();
+        // SAFETY: the resource is retained in the placed-texture cache.
+        assert_ne!(unsafe { texture.GetDesc() }.Flags.0 & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS.0, 0);
+        let mut buffer = resource;
+        buffer[0] = 1;
+        assert!(placed_texture(&View::Placed(true, buffer, words)).is_none());
+    }
 
     /// A null texture UAV keeps the title's dimension (3D for the world's
     /// wind field), and is 2D when the title names none.

@@ -90,6 +90,38 @@ impl Default for GraphicsState {
 }
 
 impl GraphicsState {
+    /// Integer render targets store shader results without blending. The
+    /// console can leave blending enabled for those slots; host D3D12
+    /// rejects the entire pipeline instead. Preserve blending on every
+    /// other target, including when the title shares target zero's state.
+    fn host_blend(&self) -> D3D12_BLEND_DESC {
+        let mut blend = self.blend;
+        let shared = !blend.IndependentBlendEnable.as_bool();
+        let integer = |format| matches!(format,
+            DXGI_FORMAT_R32G32B32A32_UINT | DXGI_FORMAT_R32G32B32A32_SINT
+            | DXGI_FORMAT_R32G32B32_UINT | DXGI_FORMAT_R32G32B32_SINT
+            | DXGI_FORMAT_R16G16B16A16_UINT | DXGI_FORMAT_R16G16B16A16_SINT
+            | DXGI_FORMAT_R32G32_UINT | DXGI_FORMAT_R32G32_SINT
+            | DXGI_FORMAT_R10G10B10A2_UINT
+            | DXGI_FORMAT_R8G8B8A8_UINT | DXGI_FORMAT_R8G8B8A8_SINT
+            | DXGI_FORMAT_R16G16_UINT | DXGI_FORMAT_R16G16_SINT
+            | DXGI_FORMAT_R32_UINT | DXGI_FORMAT_R32_SINT
+            | DXGI_FORMAT_R8G8_UINT | DXGI_FORMAT_R8G8_SINT
+            | DXGI_FORMAT_R16_UINT | DXGI_FORMAT_R16_SINT
+            | DXGI_FORMAT_R8_UINT | DXGI_FORMAT_R8_SINT);
+        for slot in 0..(self.targets.NumRenderTargets as usize).min(8) {
+            let source = if shared { 0 } else { slot };
+            if integer(self.targets.RTFormats[slot]) && self.blend.RenderTarget[source].BlendEnable.as_bool() {
+                if !blend.IndependentBlendEnable.as_bool() {
+                    blend.RenderTarget = [self.blend.RenderTarget[0]; 8];
+                    blend.IndependentBlendEnable = true.into();
+                }
+                blend.RenderTarget[slot].BlendEnable = false.into();
+            }
+        }
+        blend
+    }
+
     /// Takes in one subobject of a stream: its type, then its data at +4
     /// (+8 for those holding pointers).
     ///
@@ -196,7 +228,7 @@ impl GraphicsState {
             .collect();
         format!(
             "{:?} {} {:?} {:?} {inputs:?} {} {} {:?} {} {:?}",
-            self.blend,
+            self.host_blend(),
             self.sample_mask,
             self.rasterizer,
             self.depth,
@@ -605,7 +637,7 @@ impl HostPipeline {
                     BytecodeLength: gs.len(),
                 }
             }),
-            BlendState: g.blend,
+            BlendState: g.host_blend(),
             SampleMask: g.sample_mask,
             RasterizerState: g.rasterizer,
             DepthStencilState: g.depth,
@@ -761,7 +793,7 @@ fn mesh_pipeline(
         root: Sub(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, root.as_raw()),
         ms: Sub(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS, ms),
         ps: Sub(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, ps),
-        blend: Sub(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND, g.blend),
+        blend: Sub(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND, g.host_blend()),
         mask: Sub(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK, g.sample_mask),
         raster: Sub(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, g.rasterizer),
         depth: Sub(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, g.depth),
@@ -845,6 +877,76 @@ fn root_signature(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn integer_target_does_not_disable_blending_on_color_targets() {
+        let mut g = GraphicsState::default();
+        g.targets.NumRenderTargets = 3;
+        g.targets.RTFormats[..3].copy_from_slice(&[
+            DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R8_UINT,
+        ]);
+        g.blend.RenderTarget[0].BlendEnable = true.into();
+        g.blend.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        g.blend.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        g.blend.RenderTarget[0].RenderTargetWriteMask = 3;
+        let b = g.host_blend();
+        assert!(b.IndependentBlendEnable.as_bool());
+        assert!(b.RenderTarget[0].BlendEnable.as_bool());
+        assert!(b.RenderTarget[1].BlendEnable.as_bool());
+        assert!(!b.RenderTarget[2].BlendEnable.as_bool());
+        assert_eq!(b.RenderTarget[1].SrcBlend, D3D12_BLEND_SRC_ALPHA);
+        assert_eq!(b.RenderTarget[1].DestBlend, D3D12_BLEND_INV_SRC_ALPHA);
+        assert_eq!(b.RenderTarget[2].RenderTargetWriteMask, 3);
+        assert!(g.blend.RenderTarget[0].BlendEnable.as_bool());
+    }
+
+    #[test]
+    fn independent_blend_masks_and_integer_logic_ops_are_preserved() {
+        let mut g = GraphicsState::default();
+        g.targets.NumRenderTargets = 2;
+        g.targets.RTFormats[..2].copy_from_slice(&[DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8B8A8_UNORM]);
+        g.blend.IndependentBlendEnable = true.into();
+        g.blend.RenderTarget[0].BlendEnable = true.into();
+        g.blend.RenderTarget[0].RenderTargetWriteMask = 1;
+        g.blend.RenderTarget[1].BlendEnable = true.into();
+        g.blend.RenderTarget[1].RenderTargetWriteMask = 8;
+        let b = g.host_blend();
+        assert!(!b.RenderTarget[0].BlendEnable.as_bool());
+        assert!(b.RenderTarget[1].BlendEnable.as_bool());
+        assert_eq!(b.RenderTarget[0].RenderTargetWriteMask, 1);
+        assert_eq!(b.RenderTarget[1].RenderTargetWriteMask, 8);
+        g.blend.IndependentBlendEnable = false.into();
+        g.blend.RenderTarget[0].BlendEnable = false.into();
+        g.blend.RenderTarget[0].LogicOpEnable = true.into();
+        assert!(!g.host_blend().IndependentBlendEnable.as_bool());
+        assert!(g.host_blend().RenderTarget[0].LogicOpEnable.as_bool());
+    }
+
+    #[test]
+    fn mixed_color_and_integer_pipeline_is_accepted_by_the_host() {
+        let Some(host) = host() else { return };
+        let Some(dxc) = dxc() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let vs = compile(&dxc, dir.path(), "float4 main(uint id : SV_VertexID) : SV_Position { return float4(id == 1, id == 2, 0, 1); }", "vs_6_0");
+        let ps = compile(&dxc, dir.path(), "struct O { float4 color : SV_Target0; uint mask : SV_Target2; }; O main() { O o; o.color = 1; o.mask = 7; return o; }", "ps_6_0");
+        let (root, _) = root_signature(&host.device, &[], &[], false).unwrap();
+        let mut g = GraphicsState::default();
+        g.depth.DepthEnable = false.into();
+        g.targets.NumRenderTargets = 3;
+        g.targets.RTFormats[..3].copy_from_slice(&[DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8_UINT]);
+        g.blend.RenderTarget[0].BlendEnable = true.into();
+        let desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+            // SAFETY: root remains alive; the description borrows its pointer.
+            pRootSignature: unsafe { std::mem::transmute_copy(&root) },
+            VS: code(&vs), PS: code(&ps), BlendState: g.host_blend(),
+            SampleMask: g.sample_mask, RasterizerState: g.rasterizer,
+            DepthStencilState: g.depth, SampleDesc: g.samples,
+            NumRenderTargets: 3, RTVFormats: g.targets.RTFormats,
+            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            ..Default::default()
+        };
+        // SAFETY: the description and shader blobs remain alive during creation.
+        let _: ID3D12PipelineState = unsafe { host.device.CreateGraphicsPipelineState(&desc) }.unwrap();
+    }
     use std::path::{Path, PathBuf};
     use std::sync::atomic::Ordering;
 
