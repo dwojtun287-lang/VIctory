@@ -6,6 +6,7 @@
 mod census;
 mod inspect;
 mod prebuild;
+mod precompile;
 mod run;
 mod shader;
 mod translate;
@@ -120,6 +121,8 @@ enum Command {
         #[arg(last = true)]
         title_args: Vec<String>,
     },
+    /// Fill the runtime shader cache; fail if any discovered shader is refused.
+    Precompile { paths: Vec<PathBuf> },
     /// Show the resolved configuration and check it.
     Config,
 }
@@ -192,6 +195,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Precompile { paths } => precompile::run(paths),
         Command::Config => show_config(),
     }
 }

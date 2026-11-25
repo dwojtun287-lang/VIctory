@@ -9,9 +9,16 @@ pub fn run(paths: Vec<PathBuf>) -> Result<()> {
     use victory_gpu::shader_cache;
     let paths = crate::default_paths(paths)?;
     let cfg = victory_core::Config::load()?;
-    shader_cache::prepare_precompile(cfg.cache_subdir("shaders")?).map_err(anyhow::Error::msg)?;
+    let directory = cfg.cache_subdir("shaders")?;
+    anyhow::ensure!(
+        shader_cache::use_shader_cache(directory.clone()).is_some(),
+        "cannot open shader cache at {}",
+        directory.display()
+    );
     let mut seen = HashSet::new();
     let mut failed = 0usize;
+    let mut hits = 0usize;
+    let mut translated = 0usize;
     let mut files = 0usize;
     println!(
         "Precompiling discoverable shaders. Compressed/encrypted archives may hide additional shaders."
@@ -28,26 +35,30 @@ pub fn run(paths: Vec<PathBuf>) -> Result<()> {
                 if !seen.insert(*blake3::hash(bytes).as_bytes()) {
                     return;
                 }
-                if let Err(error) = shader_cache::precompile(bytes) {
-                    failed += 1;
-                    eprintln!(
-                        "Shader {} in {}: {error}",
-                        seen.len(),
-                        entry.path().display()
-                    );
+                let (result, cached) = shader_cache::host_shader(bytes);
+                match result {
+                    Ok(_) if cached => hits += 1,
+                    Ok(_) => translated += 1,
+                    Err(error) => {
+                        failed += 1;
+                        eprintln!(
+                            "Shader {} in {}: {error}",
+                            seen.len(),
+                            entry.path().display()
+                        );
+                    }
                 }
                 if seen.len() % 100 == 0 {
                     println!(
                         "Shaders: {}, hits/translations: {:?}, failures: {failed}",
                         seen.len(),
-                        shader_cache::counts()
+                        (hits, translated)
                     );
                 }
             };
             scan_raw(entry.path(), &mut compile)?;
         }
     }
-    let (hits, translated) = shader_cache::counts();
     println!(
         "Precompile complete: {files} files, {} unique shaders, {hits} cached, {translated} translated, {failed} failed.",
         seen.len()
@@ -131,7 +142,7 @@ fn scan_raw(path: &std::path::Path, visit: &mut impl FnMut(&[u8])) -> Result<()>
             let mut record = vec![0; n + 6];
             record[..18].copy_from_slice(&header);
             reader.read_exact(&mut record[18..])?;
-            if let Some(record) = victory_game::sgd5::records(&record).next()
+            if let Some(record) = victory_game::sgd5::records(&record).into_iter().next()
                 && let Some(bytes) = record.unpack()
                 && let Some(bytes) = canonical(&bytes)
             {

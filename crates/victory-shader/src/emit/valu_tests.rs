@@ -1747,3 +1747,38 @@ fn relative_moves_reach_only_what_their_clamped_index_can() {
         refused.err()
     );
 }
+
+#[test]
+fn double_to_float_conversion_preserves_values_and_rounding() {
+    let values = [
+        0.0f64,
+        -0.0,
+        1.0,
+        -2.5,
+        1.0 + 2.0f64.powi(-24),
+        1.0 + 3.0 * 2.0f64.powi(-24),
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+        1.0e100,
+        1.0e-100,
+    ];
+    let cases: Vec<_> = values
+        .iter()
+        .map(|v| {
+            let bits = v.to_bits();
+            [bits as u32, (bits >> 32) as u32, 0, 0]
+        })
+        .collect();
+    for source in [vgpr(1), sgpr(0)] {
+        let shader = build_valu_cs(&[vop1(0x00f, 0, source)]);
+        run_cases(&shader, &cases, |backend, i, _, got| {
+            let expected = values[i] as f32;
+            if expected.is_nan() {
+                assert!(f32::from_bits(got).is_nan(), "{backend}");
+            } else {
+                assert_eq!(got, expected.to_bits(), "{backend}: {}", values[i]);
+            }
+        });
+    }
+}

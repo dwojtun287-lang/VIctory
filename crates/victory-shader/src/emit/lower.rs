@@ -5395,6 +5395,34 @@ impl<'a> Lower<'a> {
             return self.packed16(inst, op, guard);
         }
         match name {
+            "v_cvt_f32_f64" => {
+                if v.sdwa.is_some() || v.dpp.is_some() {
+                    return Err("double conversion with SDWA or DPP");
+                }
+                let (low, high) = match v.src.first() {
+                    Some(Operand::Vector { reg, .. }) => (Reg::V(*reg), Reg::V(reg + 1)),
+                    Some(Operand::Scalar { code, .. }) if *code < 105 => {
+                        (Reg::S(*code), Reg::S(code + 1))
+                    }
+                    _ => return Err("double conversion from a non-register operand"),
+                };
+                let low = self.i32_of(inst.read(low).ok_or("a double low word")?)?;
+                let mut high = self.i32_of(inst.read(high).ok_or("a double high word")?)?;
+                if v.abs & 1 != 0 {
+                    let mask = self.s.m.i32(0x7fff_ffff);
+                    high = self.s.m.bin(c, Bin::And, high, mask);
+                }
+                if v.neg & 1 != 0 {
+                    let sign = self.s.m.i32(0x8000_0000);
+                    high = self.s.m.bin(c, Bin::Xor, high, sign);
+                }
+                self.s.flags |= flags::DOUBLES;
+                let double = self.s.m.double();
+                let value = self.s.op(c, "makeDouble.f64", Attr::ReadNone, double, 101, &[low, high]);
+                let value = self.s.m.cast(c, Cast::FpTrunc, value, self.s.t.f32);
+                float(self, value)
+            }
+
             "v_lshlrev_b64" | "v_lshrrev_b64" | "v_ashrrev_i64" => {
                 let n = s(self, 0)?;
                 let x = self.src64(inst, 1)?;
