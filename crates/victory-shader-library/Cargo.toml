@@ -1,0 +1,20 @@
+[package]
+name = "victory-shader-library"
+description = "Persistent library of translated host shaders."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+victory-pipeline.workspace = true
+victory-shader.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

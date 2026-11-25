@@ -6129,7 +6129,7 @@ impl<'a> Lower<'a> {
             if self.block[q].is_none() {
                 continue;
             }
-            let tail = self.tail[q].ok_or(WHY)?;
+            let tail = self.tail[q].ok_or("a descriptor selected across a loop back edge")?;
             let at = self.edges.get(&(q, block)).copied().unwrap_or(tail);
             let index = match arg {
                 Source::Loaded { load, first } => {
@@ -6141,7 +6141,7 @@ impl<'a> Lower<'a> {
                 Source::Phi { block: inner, args: inner_args } if depth > 0 => {
                     self.descriptor_phi(*inner, inner_args, sampler, depth - 1)?
                 }
-                _ => return Err(WHY),
+                _ => return Err("a descriptor join containing a non-load source"),
             };
             incoming.push((index, at));
         }
@@ -11354,4 +11354,9 @@ mod tests {
         // A 16-bit float is a half already, sign included.
         assert_eq!(half(0xBC00 << half_shift(16)), -1.0);
     }
+}
+
+/// Current GPU-dependent translation setting, included in persistent cache keys.
+pub fn configured_host_max_wave() -> u32 {
+    HOST_MAX_WAVE.load(std::sync::atomic::Ordering::Relaxed)
 }

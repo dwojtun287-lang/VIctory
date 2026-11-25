@@ -61,3 +61,33 @@ Diagnostics build: `cargo build --profile diag -p victory --features diagnostics
 ## License
 
 GPL-3.0-or-later (see `LICENSE`). Based on VIctory (Marvisak) and victory-fork (fxceless).
+
+## Shader library
+
+`victory-shader-library` is a reusable Rust crate that stores translated host
+shaders and their binding metadata. The renderer uses it automatically under
+`<cache directory>/shaders`; the play script defaults to
+`%LOCALAPPDATA%\ztrx\cache\shaders`. Use `-Cache` to choose another cache root.
+Entries are written atomically, reused across runs of the same build/settings,
+and regenerated if unreadable. A changed executable or translation setting uses
+new entries. No game assets or generated shaders belong in the repository.
+
+Other Rust callers can open `ShaderLibrary`, call `get_or_translate` with a
+32-byte translator/settings fingerprint, source bytes and a translation closure,
+and read per-instance hit/miss totals with `counts()`.
+
+### Compile shaders before play
+
+The play script now runs `victory precompile <game directory>` and waits for
+success before starting the game. It scans files with bounded memory for raw
+DXBC containers and packed SGD5 records, including records inside large archives.
+It deduplicates containers and fills the same shader library used during play.
+Progress and failures are saved to `%TEMP%\ztrx-precompile.log`.
+A translation failure or no shaders found stops the launch. Explicitly pass
+`-SkipPrecompile` to the play script to bypass this step.
+
+This covers discoverable shaders, not encrypted/compressed archive contents that
+the scanner cannot decode, dynamically generated shaders, or driver pipeline
+creation. Those can still compile at runtime. A full scan reads the game files
+on each launch; successful translations are reused for the same executable and
+GPU translation settings. Rebuilding invalidates translations.

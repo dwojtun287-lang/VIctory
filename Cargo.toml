@@ -23,6 +23,8 @@ victory-formats = { path = "crates/victory-formats" }
 victory-pipeline = { path = "crates/victory-pipeline" }
 victory-game = { path = "crates/victory-game" }
 
+victory-shader-library = { path = "crates/victory-shader-library" }
+
 # External crates
 anyhow = "1.0.104"
 thiserror = "2.0.21"

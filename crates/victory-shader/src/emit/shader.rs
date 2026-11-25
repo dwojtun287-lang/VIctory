@@ -879,3 +879,8 @@ impl Shader {
         Some(self.m.md_node(list))
     }
 }
+
+/// Current GPU-dependent translation setting, included in persistent cache keys.
+pub fn view_heap_limit() -> u32 {
+    VIEW_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+}

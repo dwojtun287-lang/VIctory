@@ -110,12 +110,12 @@ use crate::{ShaderError, io, ir, resource, structure};
 
 pub use bitcode::census;
 pub use sampler::StaticSampler;
-pub use lower::set_host_max_wave;
+pub use lower::{set_host_max_wave, configured_host_max_wave};
 pub use rect::rect_list_gs;
 pub use shader::{
     MEMORY_FAULTS, MEMORY_PAGES, ROOT_CBV_SPACE, SAMPLER_SPACE, SLOT_FAULTS, SLOT_MEMORY, SLOT_STRIDES,
     SLOT_STRIDES_COUNT, USER_DATA_SPACE, USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS,
-    set_view_heap_limit,
+    set_view_heap_limit, view_heap_limit,
 };
 
 /// The loop limit without an override: 2^20.
@@ -308,7 +308,23 @@ pub fn emit(
 ) -> Result<HostShader, ShaderError> {
     // (what an earlier program's lowering on this thread left behind)
     lower::take_needs();
-    let original = emit_program(c, native, p, st, io, res);
+    let mut original = emit_program(c, native, p, st, io, res);
+    // Normally a P1/P2 pair collapses to a single interpolation. If the
+    // intermediate P1 result is also consumed, materialize that result as
+    // P0 + i * (P1 - P0) and keep the final interpolation mathematically intact.
+    if matches!(&original, Err(ShaderError::Unsupported { what, .. }) if *what == "the first half of an interpolation") {
+        let mut explicit = io.clone();
+        for (_, interpolation) in &io.interps {
+            if let io::Interp::Interpolated { attribute, first, .. } = interpolation {
+                for &site in first {
+                    if !explicit.interps.iter().any(|(at, _)| *at == site) {
+                        explicit.interps.push((site, io::Interp::Weighted { attribute: *attribute }));
+                    }
+                }
+            }
+        }
+        original = emit_program(c, native, p, st, &explicit, res);
+    }
     // A console wave64 compute program on a host of 32-lane waves that
     // still needs 64 lanes, or whose cross-lane code sits where not every
     // lane runs: once more with its early-outs left out
@@ -1671,6 +1687,21 @@ mod barycentric_tests {
         let (features, inputs) = parts(&shader);
         assert_ne!(features & 0x2_0000, 0, "no Barycentrics feature");
         assert_eq!(inputs.iter().filter(|e| e.kind == 28).count(), 1);
+        assert_eq!(texcoord_mode(&shader), 1);
+        validate(&shader);
+    }
+
+    #[test]
+    fn interpolation_intermediate_can_also_be_read_as_data() {
+        let [e0, e1] = exp_mrt0(3);
+        let words = [
+            0xC808_0000, // v_interp_p1_f32 v2, v0, attr0.x
+            v_add_f32(3, 2, 0), // consume the intermediate before P2
+            0xC809_0001, // v_interp_p2_f32 v2, v1, attr0.x
+            v_add_f32(3, 3, 2),
+            e0, e1, S_ENDPGM,
+        ];
+        let shader = pixel(&words, PERSP_CENTER).unwrap();
         assert_eq!(texcoord_mode(&shader), 1);
         validate(&shader);
     }

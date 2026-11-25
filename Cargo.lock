@@ -651,8 +651,10 @@ dependencies = [
  "blake3",
  "clap",
  "memchr",
+ "tempfile",
  "victory-core",
  "victory-game",
+ "victory-gpu",
  "victory-hle",
  "victory-loader",
  "victory-pe",
@@ -696,6 +698,7 @@ dependencies = [
  "victory-formats",
  "victory-pipeline",
  "victory-shader",
+ "victory-shader-library",
  "windows",
  "windows-sys",
 ]
@@ -758,6 +761,17 @@ dependencies = [
  "thiserror",
  "windows",
  "windows-sys",
+]
+
+[[package]]
+name = "victory-shader-library"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tempfile",
+ "tracing",
+ "victory-pipeline",
+ "victory-shader",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 
 mod census;
 mod inspect;
+mod precompile;
 mod run;
 mod shader;
 mod translate;
@@ -105,6 +106,8 @@ enum Command {
         #[arg(last = true)]
         title_args: Vec<String>,
     },
+    /// Populate the runtime shader library before play (raw DXBC and SGD5).
+    Precompile { paths: Vec<PathBuf> },
     /// Show the resolved configuration and check it.
     Config,
 }
@@ -171,6 +174,7 @@ fn main() -> Result<()> {
             console,
             title_args: _,
         } => run::run(&exe, unimplemented, strict, execute, console),
+        Command::Precompile { paths } => precompile::run(paths),
         Command::Config => show_config(),
     }
 }
